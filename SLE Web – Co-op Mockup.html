@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>SLE Web – Co-op Mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>
+:root{--bg:#d4d0c8;--pn:#ece9d8;--tx:#111;--vp:#000;--gr:#2a2a2a;--gr2:#444;--br:#9fd;--ac:#0a246a;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme=light]){--bg:#2b2d30;--pn:#35373b;--tx:#e6e6e6}}
+*{box-sizing:border-box}html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--tx);font:12px Tahoma,Verdana,sans-serif;display:flex;flex-direction:column}
+header{display:flex;gap:8px;align-items:center;padding:4px 8px;background:var(--ac);color:#fff;font-weight:bold}
+header .sp{flex:1}.dot{width:8px;height:8px;border-radius:50%;display:inline-block;margin-right:4px;background:#888}.dot.on{background:#3d3}
+main{flex:1;display:flex;min-height:0}
+aside{width:150px;background:var(--pn);padding:6px;display:flex;flex-direction:column;gap:4px;overflow:auto;border-right:2px groove #888}
+aside h4{margin:6px 0 2px;font-size:11px;text-transform:uppercase;opacity:.7}
+button,select{font:inherit;padding:4px 6px;border:2px outset #ccc;background:var(--pn);color:var(--tx);cursor:pointer;text-align:left}
+button.on{border-style:inset;background:#bcd;color:#000}
+#views{flex:1;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr;gap:3px;background:#777;padding:3px;min-width:0}
+.vp{position:relative;background:var(--vp);min-width:0;min-height:0;overflow:hidden}
+.vp b{position:absolute;left:4px;top:2px;color:#9fd;font-size:11px;z-index:2;pointer-events:none}
+canvas{width:100%;height:100%;display:block}
+#list{max-height:140px;overflow:auto;font-size:11px}
+#list div{padding:1px 3px;border-bottom:1px solid #8884;white-space:nowrap}
+#chat{display:flex;flex-direction:column;gap:2px;margin-top:auto}
+#log{height:70px;overflow:auto;background:#0003;padding:2px;font-size:11px}
+input{font:inherit;width:100%}
+footer{background:var(--pn);padding:2px 8px;font-size:11px;display:flex;gap:12px;flex-wrap:wrap}
+@media (max-width:700px){aside{width:104px}#views{grid-template-columns:1fr;grid-template-rows:2fr 1fr}.vp.x{display:none}}
+</style></head><body>
+<header>Source Level Editor – Web <span style="font-weight:normal;opacity:.8">(co-op mockup)</span><span class="sp"></span><span id="who"></span><span><i class="dot" id="dot"></i><span id="st">offline (local only)</span></span></header>
+<main>
+<aside>
+<h4>Tools</h4>
+<button data-t="sel" class="on">Selection (Shift+S)</button>
+<button data-t="blk">Block (Shift+B)</button>
+<button data-t="ent">Entity (Shift+E)</button>
+<button data-t="del">Delete (Del)</button>
+<h4>Entity class</h4>
+<select id="cls"><option>info_player_start</option><option>light</option><option>prop_static</option><option>func_door</option><option>trigger_multiple</option><option>npc_zombie</option></select>
+<h4>Objects</h4><div id="list"></div>
+<div id="chat"><div id="log"></div><input id="msg" placeholder="Chat… Enter"></div>
+</aside>
+<div id="views">
+<div class="vp"><b>Top (X/Y)</b><canvas id="top"></canvas></div>
+<div class="vp"><b>3D Camera (iso)</b><canvas id="iso"></canvas></div>
+<div class="vp x"><b>Front (X/Z)</b><canvas id="front"></canvas></div>
+<div class="vp x"><b>Side (Y/Z)</b><canvas id="side"></canvas></div>
+</div></main>
+<footer><span id="pos">0, 0</span><span id="cnt"></span><span>Wheel: zoom · Middle/Space+drag: pan · Grid 16u</span></footer>
+<script>
+const G=16,COL={brush:'#9fd',info_player_start:'#4f4',light:'#ff4',prop_static:'#f9f',func_door:'#6bf',trigger_multiple:'#f84',npc_zombie:'#f55'};
+let objs={},tool='sel',sel=null,view={x:0,y:0,z:1.5},drag=null,mouse={x:0,y:0},peers=[],me={id:'l'+Math.random().toString(36).slice(2,6),name:'You'},db=null,room=null,coll=null;
+const $=id=>document.getElementById(id),top_=$('top');
+const snap=v=>Math.round(v/G)*G;
+const w2s=(x,y)=>[top_.width/2+(x-view.x)*view.z,top_.height/2-(y-view.y)*view.z];
+const s2w=(x,y)=>[snap((x-top_.width/2)/view.z+view.x),snap(-(y-top_.height/2)/view.z+view.y)];
+const hue=id=>{let h=0;for(const c of id)h=(h*31+c.charCodeAt(0))%360;return`hsl(${h} 80% 60%)`};
+function size(c){const r=c.getBoundingClientRect(),d=devicePixelRatio||1;if(c.width!==r.width*d|0){c.width=r.width*d;c.height=r.height*d}}
+function put(o){objs[o.id]=o;if(coll)coll.doc(o.id).set(o).catch(()=>{});}
+function rm(id){delete objs[id];if(coll)coll.doc(id).delete().catch(()=>{});if(sel===id)sel=null;}
+function log(t){const l=$('log');l.textContent+=t+'\n';l.scrollTop=1e9}
+function grid(c,ctx,ox,oy,z){const w=c.width,h=c.height,s=G*z*(z<.6?4:1);ctx.lineWidth=1;
+ for(let x=((w/2-ox*z)%s+s)%s;x<w;x+=s){ctx.strokeStyle=Math.round((x-w/2)/s+ox*z/s)%8?'#222':'#444';ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,h);ctx.stroke()}
+ for(let y=((h/2+oy*z)%s+s)%s;y<h;y+=s){ctx.strokeStyle='#222';ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(w,y);ctx.stroke()}}
+function drawTop(){const c=top_,ctx=c.getContext('2d');size(c);ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);grid(c,ctx,view.x,view.y,view.z);
+ ctx.lineWidth=2;ctx.strokeStyle='#611';ctx.beginPath();let [ax,ay]=w2s(0,0);ctx.moveTo(ax,0);ctx.lineTo(ax,c.height);ctx.moveTo(0,ay);ctx.lineTo(c.width,ay);ctx.stroke();
+ for(const o of Object.values(objs)){const [x,y]=w2s(o.x,o.y);const col=o.id===sel?'#fff':COL[o.cls||'brush'];
+  if(o.t==='brush'){ctx.strokeStyle=col;ctx.fillStyle=col+'22';ctx.strokeRect(x,y-o.h*view.z,o.w*view.z,o.h*view.z);ctx.fillRect(x,y-o.h*view.z,o.w*view.z,o.h*view.z)}
+  else{const r=8*view.z;ctx.fillStyle=col;ctx.fillRect(x-r,y-r,2*r,2*r);ctx.fillStyle='#fff';ctx.font=10*devicePixelRatio+'px sans-serif';ctx.fillText(o.cls,x+r+3,y+3)}
+  if(o.by&&o.by!==me.id){ctx.fillStyle=hue(o.by);ctx.fillRect(x-3,y-3,6,6)}}
+ if(drag&&drag.k==='blk'){const a=w2s(drag.x0,drag.y0),b=w2s(mouse.x,mouse.y);ctx.setLineDash([4,3]);ctx.strokeStyle='#fff';ctx.strokeRect(a[0],a[1],b[0]-a[0],b[1]-a[1]);ctx.setLineDash([])}
+ for(const p of peers){const d=p.presence;if(d&&d.x!=null){const [x,y]=w2s(d.x,d.y);ctx.fillStyle=hue(p.peer);ctx.beginPath();ctx.moveTo(x,y);ctx.lineTo(x+12,y+5);ctx.lineTo(x+5,y+12);ctx.fill();ctx.font=11*devicePixelRatio+'px sans-serif';ctx.fillText(d.name||'peer',x+14,y+16)}}}
+function proj(f){return(x,y,z)=>f(x,y,z)}
+function drawSide(id,fn){const c=$(id),ctx=c.getContext('2d');size(c);ctx.fillStyle='#000';ctx.fillRect(0,0,c.width,c.height);const z=view.z*.6;grid(c,ctx,0,0,z);
+ ctx.strokeStyle='#611';ctx.beginPath();ctx.moveTo(0,c.height*.75);ctx.lineTo(c.width,c.height*.75);ctx.stroke();
+ for(const o of Object.values(objs)){const [h,v,wd]=fn(o);const x=c.width/2+h*z,y=c.height*.75-v*z;ctx.strokeStyle=ctx.fillStyle=COL[o.cls||'brush'];
+  if(o.t==='brush'){ctx.globalAlpha=.2;ctx.fillRect(x,y-(o.z||64)*z,wd*z,(o.z||64)*z);ctx.globalAlpha=1;ctx.strokeRect(x,y-(o.z||64)*z,wd*z,(o.z||64)*z)}else ctx.fillRect(x-4,y-4,8,8)}}
+function drawIso(){const c=$('iso'),ctx=c.getContext('2d');size(c);ctx.fillStyle='#10131a';ctx.fillRect(0,0,c.width,c.height);const z=view.z*.55*(devicePixelRatio||1)/(devicePixelRatio||1);
+ const P=(x,y,zz)=>[c.width/2+((x-view.x)-(y-view.y))*.87*z,c.height*.6-((x-view.x)+(y-view.y))*.5*z-zz*z];
+ const list=Object.values(objs).sort((a,b)=>(a.x+a.y)-(b.x+b.y));
+ for(const o of list){const col=o.id===sel?'#fff':COL[o.cls||'brush'];ctx.strokeStyle=col;
+  if(o.t==='brush'){const Z=o.z||64,[x0,y0,x1,y1]=[o.x,o.y,o.x+o.w,o.y+o.h];const f=(pts,a)=>{ctx.beginPath();pts.forEach((p,i)=>{const q=P(...p);i?ctx.lineTo(...q):ctx.moveTo(...q)});ctx.closePath();ctx.globalAlpha=a;ctx.fillStyle=col;ctx.fill();ctx.globalAlpha=1;ctx.stroke()};
+   f([[x0,y0,0],[x1,y0,0],[x1,y0,Z],[x0,y0,Z]],.25);f([[x1,y0,0],[x1,y1,0],[x1,y1,Z],[x1,y0,Z]],.15);f([[x0,y0,Z],[x1,y0,Z],[x1,y1,Z],[x0,y1,Z]],.45)}
+  else{const a=P(o.x,o.y,0),b=P(o.x,o.y,24);ctx.beginPath();ctx.moveTo(...a);ctx.lineTo(...b);ctx.stroke();ctx.fillStyle=col;ctx.beginPath();ctx.arc(b[0],b[1],5,0,7);ctx.fill()}}}
+function draw(){drawTop();drawIso();drawSide('front',o=>[o.x,o.t==='brush'?0:0,o.w||0]);drawSide('side',o=>[o.y,0,o.h||0]);
+ $('cnt').textContent=Object.keys(objs).length+' objects · '+(peers.length+1)+' editor(s)';
+ $('list').innerHTML=Object.values(objs).map(o=>`<div style="color:${o.id===sel?'#fc0':'inherit'}">${o.t==='brush'?'brush':o.cls} @ ${o.x},${o.y}</div>`).join('');requestAnimationFrame(draw)}
+function hit(x,y){const l=Object.values(objs).reverse();return(l.find(o=>o.t==='ent'&&Math.abs(o.x-x)<=10&&Math.abs(o.y-y)<=10)||l.find(o=>o.t==='brush'&&x>=o.x&&x<=o.x+o.w&&y>=o.y&&y<=o.y+o.h))}
+function ev(e){const r=top_.getBoundingClientRect(),d=top_.width/r.width;return s2w((e.clientX-r.left)*d,(e.clientY-r.top)*d)}
+const nid=()=>Date.now().toString(36)+me.id;
+top_.onpointerdown=e=>{top_.setPointerCapture(e.pointerId);const [x,y]=ev(e);
+ if(e.button===1||e.shiftKey&&e.altKey||keys[' ']){drag={k:'pan',sx:e.clientX,sy:e.clientY,vx:view.x,vy:view.y};return}
+ if(tool==='blk')drag={k:'blk',x0:x,y0:y};
+ else if(tool==='ent')put({id:nid(),t:'ent',cls:$('cls').value,x,y,by:me.id});
+ else{const o=hit(x,y);if(tool==='del'){if(o)rm(o.id)}else{sel=o?o.id:null;if(o)drag={k:'mv',ox:x-o.x,oy:y-o.y}}}};
+top_.onpointermove=e=>{const [x,y]=ev(e);mouse={x,y};$('pos').textContent=x+', '+y;
+ if(drag?.k==='pan'){view.x=drag.vx-(e.clientX-drag.sx)*(top_.width/top_.getBoundingClientRect().width)/view.z;view.y=drag.vy+(e.clientY-drag.sy)*(top_.width/top_.getBoundingClientRect().width)/view.z}
+ if(drag?.k==='mv'&&objs[sel]){objs[sel].x=x-drag.ox;objs[sel].y=y-drag.oy;drag.dirty=1}
+ if(room&&(!window._t||Date.now()-window._t>50)){window._t=Date.now();room.presence({x,y,name:me.name}).catch(()=>{})}};
+top_.onpointerup=()=>{if(drag?.k==='blk'){const {x0,y0}=drag,x1=mouse.x,y1=mouse.y;if(x0!==x1&&y0!==y1)put({id:nid(),t:'brush',x:Math.min(x0,x1),y:Math.min(y0,y1),w:Math.abs(x1-x0),h:Math.abs(y1-y0),z:64,by:me.id})}
+ if(drag?.dirty)put(objs[sel]);drag=null};
+top_.onwheel=e=>{e.preventDefault();view.z=Math.min(6,Math.max(.2,view.z*(e.deltaY<0?1.15:.87)))};
+const keys={};addEventListener('keydown',e=>{if(e.target.tagName==='INPUT')return;keys[e.key]=1;if(e.key==='Delete'&&sel)rm(sel);
+ if(e.shiftKey){const m={S:'sel',B:'blk',E:'ent'}[e.key.toUpperCase()];if(m)setTool(m)}});addEventListener('keyup',e=>delete keys[e.key]);
+function setTool(t){tool=t;document.querySelectorAll('[data-t]').forEach(b=>b.classList.toggle('on',b.dataset.t===t))}
+document.querySelectorAll('[data-t]').forEach(b=>b.onclick=()=>setTool(b.dataset.t));
+$('msg').onkeydown=e=>{if(e.key==='Enter'&&e.target.value.trim()){const t=e.target.value.trim();e.target.value='';log(me.name+': '+t);room?.emit('chat',{name:me.name,t}).catch(()=>{})}};
+// seed local scene so it works alone
+[['brush',-128,-128,256,16],['brush',-128,112,256,16],['brush',-128,-112,16,224],['brush',112,-112,16,224]].forEach(([t,x,y,w,h],i)=>objs['s'+i]={id:'s'+i,t,x,y,w,h,z:96});
+objs.e0={id:'e0',t:'ent',cls:'info_player_start',x:0,y:0};
+// co-op wiring: lights up only if the runtime grants it
+(async()=>{try{
+ const [u,d,r]=await Promise.all([claude.use('user'),claude.use('db'),claude.use('room')]);
+ if(u){const m=await u.me();me.id=m.id||me.id;me.name=(m.name||'Mapper '+me.id.slice(-3))}
+ $('who').textContent=me.name;
+ if(d){db=d;coll=db.collection('sle_objs');let first=true;
+  coll.onSnapshot(s=>{const n={};s.docs.forEach(x=>n[x.id]=x.data());if(s.empty&&first){Object.values(objs).forEach(o=>coll.doc(o.id).set(o).catch(()=>{}))}else objs=n;first=false;
+   $('dot').classList.add('on');$('st').textContent='live co-op'},e=>{$('st').textContent='db error'})}
+ if(r){room=r;r.onPeers(c=>{peers=c.peers.filter(p=>!p.isMe);$('dot').classList.add('on');$('st').textContent='live co-op · '+(peers.length+1)+' here'});
+  r.on('chat',m=>{if(!m.isMe)log((m.data?.name||'peer')+': '+String(m.data?.t||'').slice(0,200))})}
+}catch(e){}})();
+requestAnimationFrame(draw);
+</script></body></html>
